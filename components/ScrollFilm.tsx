@@ -69,12 +69,13 @@ export default function ScrollFilm() {
     let drawn = -1;
     let raf = 0;
     let lastPct = 0;
+    let shown = false;
+    let drawnImg: Frame | null = null;
 
     const loader = new FrameLoader(
       indices.map((i) => frameUrl(set, i)),
       (i) => {
         if (Math.abs(i - Math.round(current * (indices.length - 1))) < 3) drawn = -1;
-        if (i === 0) setReady(true);
         const pct = Math.round((loader.loaded / loader.total) * 100);
         if (pct !== lastPct) {
           lastPct = pct;
@@ -101,11 +102,16 @@ export default function ScrollFilm() {
       current += (target - current) * (reduce ? 1 : 0.12);
       const slot = Math.round(current * (indices.length - 1));
       loader.focus(slot);
-      if (slot !== drawn) {
-        const img = loader.nearest(slot);
-        if (img) {
+      const img = loader.nearest(slot);
+      if (img && (slot !== drawn || img !== drawnImg)) {
+        {
+          drawnImg = img;
           drawFrame(ctx, img, set, current, orientation);
           drawn = slot;
+          if (!shown) {
+            shown = true;
+            setReady(true);
+          }
         }
       }
       CAPTIONS.forEach((c, k) => {

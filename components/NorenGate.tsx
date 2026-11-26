@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Safe3D from "./Safe3D";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import noren from "@/assets/interior/noren.webp";
 import { useLight } from "@/lib/light";
@@ -103,7 +104,9 @@ export default function NorenGate({ children }: { children: ReactNode }) {
           <div className={`gate-fallback ${ready ? "hide" : ""}`} style={{ backgroundImage: `url(${noren.src})` }} aria-hidden />
           {near && (
             <div className="gate-canvas">
-              <NorenCurtain3D drive={drive} lit={on} onReady={() => setReady(true)} />
+              <Safe3D>
+                <NorenCurtain3D drive={drive} lit={on} onReady={() => setReady(true)} />
+              </Safe3D>
             </div>
           )}
           <div className="gate-copy" ref={copy} aria-hidden>

@@ -1,5 +1,6 @@
 "use client";
 
+import { mobileDpr } from "./Safe3D";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useMemo, useRef, type MutableRefObject } from "react";
 import * as THREE from "three";
@@ -258,9 +259,9 @@ export default function NorenCurtain3D({
 }) {
   return (
     <Canvas
-      dpr={[1, 2]}
+      dpr={mobileDpr()}
       camera={{ position: [0, 0, 4], fov: 35 }}
-      gl={{ antialias: true, alpha: true }}
+      gl={{ antialias: true, alpha: true, powerPreference: "default", failIfMajorPerformanceCaveat: false }}
       style={{ touchAction: "pan-y" }}
       onCreated={() => requestAnimationFrame(() => onReady?.())}
     >

@@ -1,5 +1,6 @@
 "use client";
 
+import { mobileDpr } from "./Safe3D";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { ContactShadows } from "@react-three/drei";
 import { useMemo, useRef, useState } from "react";
@@ -165,9 +166,9 @@ function Lamp({ on, onToggle }: { on: boolean; onToggle: () => void }) {
 export default function AkariLamp({ on, onToggle }: { on: boolean; onToggle: () => void }) {
   return (
     <Canvas
-      dpr={[1, 2]}
+      dpr={mobileDpr()}
       camera={{ position: [0, 0.6, 2.45], fov: 30 }}
-      gl={{ antialias: true, alpha: true }}
+      gl={{ antialias: true, alpha: true, powerPreference: "default", failIfMajorPerformanceCaveat: false }}
       style={{ touchAction: "pan-y" }}
       onCreated={({ camera }) => camera.lookAt(0, 0.6, 0)}
     >

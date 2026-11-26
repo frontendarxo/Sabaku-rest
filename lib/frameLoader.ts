@@ -1,26 +1,39 @@
 /**
- * Priority frame loader for the scroll film.
+ * Priority frame loader for the scroll film — memory-safe version.
  *
- * Why the old page felt slow: it queued all 241 images at once, so the frames
- * the visitor actually needed waited behind the rest. This loader:
- *  1. loads the first 12 frames first (the film can start immediately);
- *  2. always fetches frames nearest to the current scroll position next,
- *     biased forward (the direction people scroll);
- *  3. fills the rest coarse-to-fine (every 8th, 4th, 2nd…) so a fast scroll
- *     never shows an empty canvas — just a slightly lower frame rate;
- *  4. keeps at most 6 requests in flight and decodes off the main thread
- *     (createImageBitmap / img.decode), so scrolling never stutters.
+ * Two layers:
+ *  - compressed files (Blob, ~50 KB each) are downloaded for the whole film
+ *    and kept: the full mobile set is ~16 MB;
+ *  - decoded bitmaps (~3 MB each!) are kept ONLY for a small window around the
+ *    current scroll position. Everything else is closed right away.
+ *
+ * The previous version decoded and kept all 317 frames (~1 GB of bitmaps),
+ * which made iOS kill the tab ("A problem repeatedly occurred").
+ *
+ * Download order: first 12 frames → forward-biased window around the visitor →
+ * coarse-to-fine fill (every 8th, 4th, 2nd…), max N requests in flight.
  */
 
 export type Frame = ImageBitmap | HTMLImageElement;
 
+const isMobile = () =>
+  typeof navigator !== "undefined" &&
+  (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
+
 export class FrameLoader {
-  private frames: (Frame | null)[];
-  private state: Uint8Array; // 0 = idle, 1 = loading, 2 = done, 3 = failed
+  private blobs: (Blob | null)[];
+  private state: Uint8Array; // download: 0 idle, 1 loading, 2 done, 3 failed
+  private decoded = new Map<number, Frame>();
+  private decoding = new Set<number>();
   private inFlight = 0;
   private target = 0;
   private destroyed = false;
   private coarseOrder: number[];
+  /** Max decoded frames kept in memory at once. */
+  private budget: number;
+  private ahead: number;
+  private behind: number;
   loaded = 0;
 
   constructor(
@@ -28,7 +41,13 @@ export class FrameLoader {
     private onFrame: (index: number) => void,
     private maxConcurrent = 6,
   ) {
-    this.frames = new Array(urls.length).fill(null);
+    const mobile = isMobile();
+    this.budget = mobile ? 22 : 64;
+    this.ahead = mobile ? 12 : 36;
+    this.behind = mobile ? 6 : 16;
+    if (mobile) this.maxConcurrent = Math.min(maxConcurrent, 4);
+
+    this.blobs = new Array(urls.length).fill(null);
     this.state = new Uint8Array(urls.length);
     const seen = new Set<number>();
     this.coarseOrder = [];
@@ -46,10 +65,12 @@ export class FrameLoader {
     return this.urls.length;
   }
 
-  /** Tell the loader which frame the visitor is looking at now. */
   focus(index: number) {
-    this.target = Math.max(0, Math.min(this.urls.length - 1, index));
+    const t = Math.max(0, Math.min(this.urls.length - 1, index));
+    if (t === this.target) return;
+    this.target = t;
     this.pump();
+    this.decodeWindow();
   }
 
   start() {
@@ -58,35 +79,40 @@ export class FrameLoader {
 
   destroy() {
     this.destroyed = true;
-    for (const f of this.frames) if (f && "close" in f) f.close();
+    for (const f of this.decoded.values()) if ("close" in f) f.close();
+    this.decoded.clear();
+    this.blobs.fill(null);
   }
 
-  /** Nearest frame that is ready — used while the exact one is still loading. */
+  /** Nearest decoded frame — used while the exact one is still decoding. */
   nearest(index: number): Frame | null {
-    const n = this.frames.length;
-    for (let d = 0; d < n; d++) {
-      const a = this.frames[index - d];
-      if (a) return a;
-      const b = this.frames[index + d];
-      if (b) return b;
+    const exact = this.decoded.get(index);
+    if (exact) return exact;
+    let best: Frame | null = null;
+    let bestD = Infinity;
+    for (const [i, f] of this.decoded) {
+      const d = Math.abs(i - index);
+      if (d < bestD) {
+        bestD = d;
+        best = f;
+      }
     }
-    return null;
+    return best;
   }
+
+  // ---------- downloading (compressed) ----------
 
   private next(): number {
     const n = this.urls.length;
-    // 1) opening frames
     for (let i = 0; i < Math.min(12, n); i++) if (this.state[i] === 0) return i;
-    // 2) window around the current position, forward-biased
     for (let d = 0; d < 24; d++) {
-      const ahead = this.target + d;
-      if (ahead < n && this.state[ahead] === 0) return ahead;
+      const a = this.target + d;
+      if (a < n && this.state[a] === 0) return a;
       if (d < 8) {
-        const behind = this.target - d;
-        if (behind >= 0 && this.state[behind] === 0) return behind;
+        const b = this.target - d;
+        if (b >= 0 && this.state[b] === 0) return b;
       }
     }
-    // 3) coarse-to-fine fill of the whole film
     for (const i of this.coarseOrder) if (this.state[i] === 0) return i;
     return -1;
   }
@@ -98,39 +124,95 @@ export class FrameLoader {
       if (i < 0) return;
       this.state[i] = 1;
       this.inFlight++;
-      this.fetchFrame(i).finally(() => {
+      this.download(i).finally(() => {
         this.inFlight--;
         this.pump();
       });
     }
   }
 
-  private async fetchFrame(i: number) {
+  private async download(i: number) {
     try {
-      let frame: Frame;
-      if (typeof createImageBitmap === "function") {
-        const res = await fetch(this.urls[i], { priority: i < 12 ? "high" : "low" } as RequestInit);
-        if (!res.ok) throw new Error(String(res.status));
-        frame = await createImageBitmap(await res.blob());
-      } else {
-        const img = new Image();
-        img.decoding = "async";
-        img.src = this.urls[i];
-        await img.decode();
-        frame = img;
-      }
-      if (this.destroyed) {
-        if ("close" in frame) frame.close();
-        return;
-      }
-      this.frames[i] = frame;
+      const res = await fetch(this.urls[i], { priority: i < 12 ? "high" : "low" } as RequestInit);
+      if (!res.ok) throw new Error(String(res.status));
+      const blob = await res.blob();
+      if (this.destroyed) return;
+      this.blobs[i] = blob;
       this.state[i] = 2;
       this.loaded++;
       this.onFrame(i);
+      if (this.inWindow(i) || this.decoded.size === 0) this.decode(i);
     } catch {
       this.state[i] = 3;
       this.loaded++;
       this.onFrame(i);
+    }
+  }
+
+  // ---------- decoding (bitmaps, bounded) ----------
+
+  private inWindow(i: number) {
+    return i >= this.target - this.behind && i <= this.target + this.ahead;
+  }
+
+  private decodeWindow() {
+    // drop frames far from the visitor first
+    this.evict();
+    // nearest-first: exact frame, then ahead/behind alternating
+    for (let d = 0; d <= this.ahead; d++) {
+      const a = this.target + d;
+      if (a < this.urls.length) this.decode(a);
+      if (d <= this.behind) {
+        const b = this.target - d;
+        if (b >= 0) this.decode(b);
+      }
+      if (this.decoding.size >= 3) break;
+    }
+  }
+
+  private evict() {
+    if (this.decoded.size <= this.budget) return;
+    const far = [...this.decoded.keys()].sort((a, b) => Math.abs(b - this.target) - Math.abs(a - this.target));
+    while (this.decoded.size > this.budget && far.length) {
+      const i = far.shift()!;
+      if (Math.abs(i - this.target) <= 1) break;
+      const f = this.decoded.get(i)!;
+      if ("close" in f) f.close();
+      this.decoded.delete(i);
+    }
+  }
+
+  private async decode(i: number) {
+    const blob = this.blobs[i];
+    if (!blob || this.decoded.has(i) || this.decoding.has(i) || this.destroyed) return;
+    this.decoding.add(i);
+    try {
+      let frame: Frame;
+      if (typeof createImageBitmap === "function") {
+        frame = await createImageBitmap(blob);
+      } else {
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.src = url;
+        await img.decode();
+        URL.revokeObjectURL(url);
+        frame = img;
+      }
+      if (this.destroyed || !this.inWindow(i)) {
+        // visitor already moved away — keep only if nothing else is decoded
+        if (this.destroyed || this.decoded.size > 0) {
+          if ("close" in frame) frame.close();
+          return;
+        }
+      }
+      this.decoded.set(i, frame);
+      this.evict();
+      this.onFrame(i);
+    } catch {
+      /* skip broken frame */
+    } finally {
+      this.decoding.delete(i);
+      if (!this.destroyed) this.decodeWindow();
     }
   }
 }

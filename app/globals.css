@@ -190,3 +190,11 @@ footer.floor.dark::before { opacity: 0; }
   background: radial-gradient(closest-side, rgba(255, 178, 96, 0.28), rgba(255, 178, 96, 0.08) 55%, transparent); transition: opacity 0.9s; }
 footer.floor.dark .floor-lamp::before { opacity: 0; }
 @media (max-width: 760px) { .visit { padding-bottom: 190px; } }
+
+/* fallback switch when the 3D lamp can't start */
+.floor-lamp-btn {
+  position: absolute; left: 0; bottom: 30px;
+  font: 500 13px/1 Barlow, sans-serif; letter-spacing: .08em; text-transform: uppercase;
+  padding: 12px 18px; border-radius: 999px; border: 1px solid rgba(240,169,74,.5);
+  background: rgba(20,18,16,.6); color: #ECE9E3; cursor: pointer;
+}

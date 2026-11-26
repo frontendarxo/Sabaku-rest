@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Safe3D from "./Safe3D";
 import { useEffect, useRef, useState } from "react";
 import { useLight } from "@/lib/light";
 
@@ -24,7 +25,11 @@ export default function SiteFooter() {
   return (
     <footer className={`floor ${on ? "lit" : "dark"}`} ref={ref}>
       <div className="floor-lamp" aria-label="Akari paper lamp — tap to switch the light">
-        {near && <AkariLamp on={on} onToggle={toggle} />}
+        {near && (
+          <Safe3D fallback={<button className="floor-lamp-btn" onClick={toggle} aria-pressed={on}>{on ? "Light off" : "Light on"}</button>}>
+            <AkariLamp on={on} onToggle={toggle} />
+          </Safe3D>
+        )}
       </div>
       <div className="floor-row">
         <span>
